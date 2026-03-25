@@ -1,0 +1,5 @@
+.vscode/
+__pycache__/
+datasets/*
+_openocr/
+resources/*
