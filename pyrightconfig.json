@@ -1,0 +1,7 @@
+{
+    "extraPaths": [
+        "third_party/fstdb/src",
+        "third_party/cfgfw/src",
+        "third_party/openocr/src"
+    ]
+  }

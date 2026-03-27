@@ -1,0 +1,9 @@
+[submodule "third_party/openocr"]
+	path = third_party/openocr
+	url = git@github.com:hoonisone/OpenOCR.git
+[submodule "third_party/cfgfw"]
+	path = third_party/cfgfw
+	url = git@github.com:hoonisone/cfgfw.git
+[submodule "third_party/fstdb"]
+	path = third_party/fstdb
+	url = git@github.com:hoonisone/fstdb.git
