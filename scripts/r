@@ -10,5 +10,5 @@ docker run -it --shm-size=64gb \
     --cpus=30 \
     --cpu-shares=256 \
     --name "${CONTAINER_NAME}" \
-    hoonisone/openocr:0.1.0___2.6.0-cuda12.6-cudnn9-devel \
+    hoonisone/openocr:0.2.0___2.6.0-cuda12.6-cudnn9-devel \
     /bin/bash

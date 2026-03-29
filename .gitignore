@@ -3,3 +3,9 @@ __pycache__/
 datasets/*
 _openocr/
 resources/*
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd

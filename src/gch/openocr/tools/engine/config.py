@@ -1,5 +1,5 @@
 from openocr.tools.engine.config import Config as OpenOCRConfig
-from rm import RMFactory
+from gch.rm import RMFactory
 
 rm_factory = RMFactory()
 config_manager = rm_factory.config_manager

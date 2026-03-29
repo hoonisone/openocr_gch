@@ -7,8 +7,8 @@ sys.path.append(__dir__)
 sys.path.insert(0, os.path.abspath(os.path.join(__dir__, '..')))
 
 
-from openocr_ext.tools.engine.config import Config
-from openocr.tools.engine.trainer import Trainer
+from gch.openocr.tools.engine.config import Config
+from gch.openocr.tools.engine.trainer import GCHTrainer as Trainer
 from openocr.tools.utility import ArgsParser
 
 
