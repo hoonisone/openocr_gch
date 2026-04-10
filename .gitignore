@@ -3,6 +3,11 @@ __pycache__/
 datasets/*
 _openocr/
 resources/*
+wandb
+build
+eval*
+train*
+test*
 
 # Python cache
 __pycache__/

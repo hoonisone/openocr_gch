@@ -76,10 +76,20 @@ class SimpleDatasetTVResize(Dataset):
         self.padding_doub = dataset_config.get('padding_doub', False)
         self.do_shuffle = loader_config['shuffle']
         self.seed = epoch
-        self.data_dir = dataset_config['data_dir']
+        self.data_dir = dataset_config.get('data_dir')
+        data_dir_list = dataset_config.get('data_dir_list')
+        if data_dir_list is None:
+            assert self.data_dir is not None, (
+                'Either data_dir or data_dir_list must be provided.')
+            data_dir_list = [self.data_dir] * data_source_num
+        if isinstance(data_dir_list, str):
+            data_dir_list = [data_dir_list]
+        assert len(data_dir_list) == data_source_num, (
+            'The length of data_dir_list should be the same as label_file_list.')
 
         logger.info(f'Initialize indexs of datasets: {label_file_list}')
-        self.data_lines = self._get_image_info_list(label_file_list, ratio_list,
+        self.data_lines = self._get_image_info_list(label_file_list,
+                                                    data_dir_list, ratio_list,
                                                     seed, epoch)
         n = len(self.data_lines)
         self.data_idx_order_list = np.zeros((n, 2), dtype=np.float64)
@@ -130,10 +140,11 @@ class SimpleDatasetTVResize(Dataset):
         except Exception:
             return
 
-    def _get_image_info_list(self, file_list, ratio_list, seed, epoch):
+    def _get_image_info_list(self, file_list, data_dir_list, ratio_list, seed,
+                             epoch):
         rnd = seed if seed is not None else epoch
         data_lines = []
-        for idx, file in enumerate(file_list):
+        for idx, (file, data_dir) in enumerate(zip(file_list, data_dir_list)):
             with open(file, 'rb') as f:
                 lines = f.readlines()
             if self.mode == 'train' or ratio_list[idx] < 1.0:
@@ -142,7 +153,7 @@ class SimpleDatasetTVResize(Dataset):
                 if k == 0:
                     continue
                 lines = random.sample(lines, min(k, len(lines)))
-            data_lines.extend(lines)
+            data_lines.extend([(line, data_dir) for line in lines])
         return data_lines
 
     def _shuffle_data_random(self, seed, epoch):
@@ -162,14 +173,14 @@ class SimpleDatasetTVResize(Dataset):
 
     def _get_sample_bytes_and_label(self, line_idx):
         line_idx = int(line_idx)
-        line = self.data_lines[line_idx]
+        line, data_dir = self.data_lines[line_idx]
         try:
             text = line.decode('utf-8')
             substr = text.strip('\n').split(self.delimiter)
             file_name = substr[0]
             file_name = self._try_parse_filename_list(file_name)
             label = substr[1]
-            img_path = os.path.join(self.data_dir, file_name)
+            img_path = os.path.join(data_dir, file_name)
             if not os.path.exists(img_path):
                 return None
             with open(img_path, 'rb') as f:
@@ -209,8 +220,10 @@ class SimpleDatasetTVResize(Dataset):
         chunksize = max(1, int(chunksize))
 
         tasks = (
-            (self.data_lines[int(self.data_idx_order_list[i, 1])],
-             self.delimiter, self.data_dir) for i in range(total)
+            (self.data_lines[int(self.data_idx_order_list[i, 1])][0],
+             self.delimiter,
+             self.data_lines[int(self.data_idx_order_list[i, 1])][1])
+            for i in range(total)
         )
 
         # Keep output order aligned with data_idx_order_list.

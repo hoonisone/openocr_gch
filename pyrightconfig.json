@@ -4,6 +4,7 @@
     "exclude": [".venv", "build", "dist", "data", "**/__pycache__"],
 
     "extraPaths": [
+        "src",
         "third_party/fstdb/src",
         "third_party/cfgfw/src",
         "third_party/openocr/src"

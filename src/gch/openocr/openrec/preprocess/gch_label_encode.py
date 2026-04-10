@@ -1,13 +1,16 @@
 from openocr.openrec.preprocess import MODULE_MAPPING, dynamic_import
 
 MODULE_MAPPING['GCHLabelEncode'] = 'gch.openocr.openrec.preprocess.gch_label_encode'
+MODULE_MAPPING['QualityWrapperHeadLabelEncode'] = 'gch.openocr.openrec.preprocess.gch_label_encode'
 
 
 
 
 
 class GCHLabelEncode():
-    def __init__(self, c_encoder, g_encoder, **kwargs):
+    def __init__(self, c_encoder, g_encoder, use_c:bool = True, use_g:bool = True, **kwargs):
+        self.use_c = use_c
+        self.use_g = use_g
 
         korean_transformer_kwargs = kwargs.get("korean_transformer", {})
         kwargs.pop("korean_transformer", None)
@@ -29,19 +32,23 @@ class GCHLabelEncode():
 
     def __call__(self, data):
         # apply c_encoder directly
-        label_data = {"label": data["label"]}
-        c_label = self.c_encoder(label_data)
-        if c_label is None:
-            return None
         
-        label_data = {"label": self.korean_transformer.c2g(data["label"])}
-        g_label = self.g_encoder(label_data)
-        if g_label is None:
-            return None
-        
-        data["c_label"] = c_label
-        data["g_label"] = g_label
+        if self.use_c:
+            label_data = {"label": data["label"]}
+            c_label = self.c_encoder(label_data)
+            if c_label is None:
+                return None
+            data["c_label"] = c_label
+
+        if self.use_g:
+            label_data = {"label": self.korean_transformer.c2g(data["label"])}
+            g_label = self.g_encoder(label_data)
+            if g_label is None:
+                return None
+            data["g_label"] = g_label
         return data
+
+
 
 from typing import List, Tuple, Union, Optional
 
@@ -62,9 +69,10 @@ class KoreanTransfomer:
                  final_dict_path=None,
                  **kwargs):
 
-        self.initials = self._load_dict(initial_dict_path) if initial_dict_path else [chr(ord('가')+i*self.INITIAL_DURATION) for i in range(self.INITIAL_NUM)]
-        self.medials = self._load_dict(medial_dict_path) if medial_dict_path else [chr(ord('ㅏ')+i) for i in range(self.VOWEL_NUM)] # 글자 중복으로 '아애야...' 가 아닌 'ㅏㅐㅑ...' 으로 생성
-        self.finals = self._load_dict(final_dict_path) if final_dict_path else [chr(ord('으')+i) for i in range(self.FINAL_NUM)]
+        self.initials = self._load_dict(initial_dict_path) if initial_dict_path else [chr(ord('ᄀ')+i) for i in range(self.INITIAL_NUM)]
+        self.medials = self._load_dict(medial_dict_path) if medial_dict_path else [chr(ord('ᅡ')+i) for i in range(self.VOWEL_NUM)] # 글자 중복으로 '아애야...' 가 아닌 'ㅏㅐㅑ...' 으로 생성
+        self.finals = self._load_dict(final_dict_path) if final_dict_path else ['으']+[chr(ord('ᆨ')+i) for i in range(self.FINAL_NUM-1)]
+        
 
         assert len(self.initials) == self.INITIAL_NUM
         assert len(self.medials) == self.VOWEL_NUM
@@ -148,3 +156,29 @@ class KoreanTransfomer:
                     i += 3 # 3개 글자 패스
 
         return "".join(new_text)
+
+
+from gch.openocr.tools.data.dict_wrapper import DictWrapper
+
+class QualityWrapperHeadLabelEncode:
+    def __init__(self, inner_encoder=None, 
+            max_text_length=None, 
+            character_dict_path=None, 
+            use_space_char=None, 
+        **kwargs):
+        self.inner_encoder = dynamic_import(inner_encoder['name'])(
+            max_text_length=max_text_length,
+            character_dict_path=character_dict_path,
+            use_space_char=use_space_char,
+            **inner_encoder)
+
+
+    def __call__(self, data):
+        inner_encoder = self.inner_encoder(data)
+        if inner_encoder is None:
+            return None
+
+        return {
+            "inner_label": inner_encoder,
+            "quality_label": DictWrapper()
+        }

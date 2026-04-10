@@ -15,6 +15,7 @@ from openocr.tools.utils.logging import get_logger
 from openocr.tools.utils.stats import TrainingStats
 from openocr.tools.utils.utility import AverageMeter
 import torch.distributed as dist
+from pathlib import Path
 
 __all__ = ['GCHTrainer']
 
@@ -23,7 +24,7 @@ __all__ = ['GCHTrainer']
 
 
 from openocr.tools.engine.trainer import rank, is_main_process, get_parameter_number
-
+from gch.openocr.tools.data.dict_wrapper import DictWrapper
 
 
 def _map_nested(batch, leaf_transform):
@@ -47,6 +48,27 @@ def _to_numpy_leaf(x):
     if isinstance(x, torch.Tensor):
         return x.numpy()
     return x
+
+
+def _flatten_dict(data, parent_key="", sep="."):
+    flat = {}
+    for key, value in data.items():
+        new_key = f"{parent_key}{sep}{key}" if parent_key else str(key)
+        if isinstance(value, dict):
+            flat.update(_flatten_dict(value, parent_key=new_key, sep=sep))
+        else:
+            flat[new_key] = value
+    return flat
+
+
+def _to_log_scalar(value):
+    if isinstance(value, torch.Tensor):
+        if value.shape == []:
+            return float(value)
+        return float(value.detach().cpu().numpy().mean())
+    if isinstance(value, np.ndarray):
+        return float(value.mean())
+    return float(value)
 
 
 class GCHTrainer(object):
@@ -74,23 +96,24 @@ class GCHTrainer(object):
 
         self.cfg['Global']['output_dir'] = self.cfg['Global'].get(
             'output_dir', 'output')
-        os.makedirs(self.cfg['Global']['output_dir'], exist_ok=True)
+        output_dir_path = Path(self.cfg['Global']['output_dir']).resolve()
+        os.makedirs(output_dir_path, exist_ok=True)
 
         self.writer = None
         if is_main_process(
         ) and self.cfg['Global']['use_tensorboard'] and 'train' in mode:
             import wandb
             from torch.utils.tensorboard import SummaryWriter
-            wandb.init(project='demo-sync-tb',
-                       name=self.cfg['Global'].get('run_name',
-                                                   'log_wandb_openocr'),
-                       sync_tensorboard=True)
+            wandb_cfg = self.cfg["Wandb"]
 
-            self.writer = SummaryWriter(self.cfg['Global']['output_dir'])
+            wandb.init(**wandb_cfg)
 
+            self.writer = SummaryWriter(output_dir_path)
+
+        log_path = (Path(self.cfg['Global']['output_dir'])/'train.log').resolve().as_posix()
         self.logger = get_logger(
             'openrec' if task == 'rec' else 'opendet',
-            os.path.join(self.cfg['Global']['output_dir'], 'train.log')
+            log_path
             if 'train' in mode else None,
         )
 
@@ -103,11 +126,11 @@ class GCHTrainer(object):
 
         # build data loader
         self.train_dataloader = None
+        config_path = (Path(self.cfg['Global']['output_dir'])/'config.yml').resolve().as_posix()
+        if is_main_process():
+            cfg.save(config_path, self.cfg)
+       
         if 'train' in mode:
-            if is_main_process():
-                cfg.save(
-                    os.path.join(self.cfg['Global']['output_dir'],
-                                 'config.yml'), self.cfg)
             self.train_dataloader = build_dataloader(self.cfg,
                                                      'Train',
                                                      self.logger,
@@ -177,6 +200,12 @@ class GCHTrainer(object):
         self.logger.info(
             f'run with torch {torch.__version__} and device {self.device}')
 
+        if self.cfg.get("Hook", None) is not None:
+            from gch.openocr.tools.engine.hook import build_hook
+            self.hook = build_hook(self.cfg['Hook'])
+        else:
+            self.hook = None
+
     def _init_rec_model(self):
         from openocr.openrec.losses import build_loss as build_rec_loss
         from openocr.openrec.metrics import build_metric as build_rec_metric
@@ -209,8 +238,8 @@ class GCHTrainer(object):
         else:
             char_num = self.post_process_class.get_character_num()
 
-            self.cfg['Architecture']['Decoder']['c_encoder']['out_channels'] = char_num['c_num']
-            self.cfg['Architecture']['Decoder']['g_encoder']['out_channels'] = char_num['g_num']
+            self.cfg['Architecture']['Decoder']['c_decoder']['out_channels'] = char_num['c_num']
+            self.cfg['Architecture']['Decoder']['g_decoder']['out_channels'] = char_num['g_num']
 
 
             self.model = build_rec_model(self.cfg['Architecture'])
@@ -332,6 +361,8 @@ class GCHTrainer(object):
 
         last_whole_epoch_global_step = 0
         for epoch in range(start_epoch, epoch_num + 1):
+            if self.hook:
+                self.hook.before_epoch(self, epoch)
             if not self.cfg['Global'].get('resume_from_iter',
                                           False):  # for unirec resume training
                 if 'sampler' in self.cfg['Train']:
@@ -381,10 +412,22 @@ class GCHTrainer(object):
                             }
                             preds = self.model(**inputs)
                         else:
-                            preds = self.model(batch_tensor.pop("image"), batch_tensor)
+                            image_tensor = batch_tensor['image']
+                            other_tensor = {k: v for k, v in batch_tensor.items() if k != 'image'}
+                            preds = self.model(image_tensor, other_tensor)
+
+
+                        post_result = self.post_process_class(preds,
+                                                          batch_numpy,
+                                                          training=True)
+
+
+
                         loss = self.loss_class(preds, batch_tensor)
                         loss['loss'] = loss['loss'] / self.accumulation_steps
+                    
                     self.scaler.scale(loss['loss']).backward()
+
                     if (global_step + 1) % self.accumulation_steps == 0:
                         if self.grad_clip_val > 0:
                             self.scaler.unscale_(self.optimizer)
@@ -395,7 +438,14 @@ class GCHTrainer(object):
                         self.scaler.update()
                         self.optimizer.zero_grad(set_to_none=True)
                 else:
-                    preds = self.model(batch_tensor[0], data=batch_tensor[1:])
+                    image_tensor = batch_tensor['image']
+                    other_tensor = {k: v for k, v in batch_tensor.items() if k != 'image'}
+                    preds = self.model(image_tensor, data=other_tensor)
+
+                    post_result = self.post_process_class(
+                        preds, batch_numpy, training=True
+                    )
+
                     loss = self.loss_class(preds, batch_tensor)
                     avg_loss = loss['loss']
                     avg_loss.backward()
@@ -411,6 +461,7 @@ class GCHTrainer(object):
                                                           training=True)
                     self.eval_class(post_result, batch_numpy, training=True)
                     metric = self.eval_class.get_metric()
+                    metric = _flatten_dict(metric)
                     train_stats.update(metric)
 
                 train_batch_time = time.time() - reader_start
@@ -428,14 +479,16 @@ class GCHTrainer(object):
 
                 loss['loss'] = loss['loss'] * self.accumulation_steps
                 # logger
+                flat_loss = _flatten_dict(loss)
                 stats = {
-                    k: float(v)
-                    if v.shape == [] else v.detach().cpu().numpy().mean()
-                    for k, v in loss.items()
+                    k: _to_log_scalar(v)
+                    for k, v in flat_loss.items()
                 }
                 stats['lr'] = self.lr_scheduler.get_last_lr()[0]
+                
                 train_stats.update(stats)
 
+                
                 if self.writer is not None:
                     for k, v in train_stats.get().items():
                         self.writer.add_scalar(f'TRAIN/{k}', v, global_step)
@@ -569,13 +622,16 @@ class GCHTrainer(object):
                     batch, lambda t: _to_device_leaf(t, self.device))
                 batch_numpy = _map_nested(batch, _to_numpy_leaf)
                 start = time.time()
+                
+                image = batch_tensor.pop("image")
+                
                 if self.scaler:
                     with torch.cuda.amp.autocast(
                             enabled=self.device.type == 'cuda'):
-                        preds = self.model(batch_tensor[0],
-                                           data=batch_tensor[1:])
+
+                        preds = self.model(image, data=batch_tensor)
                 else:
-                    preds = self.model(batch_tensor[0], data=batch_tensor[1:])
+                    preds = self.model(image, data=batch_tensor)
 
                 total_time += time.time() - start
                 # Obtain usable results from post-processing methods
@@ -584,7 +640,7 @@ class GCHTrainer(object):
                 self.eval_class(post_result, batch_numpy)
 
                 pbar.update(1)
-                total_frame += len(batch[0])
+                total_frame += len(batch["image"])
                 sum_images += 1
             # Get final metric，eg. acc or hmean
             metric = self.eval_class.get_metric()
