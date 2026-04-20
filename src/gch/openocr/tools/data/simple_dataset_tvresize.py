@@ -21,7 +21,9 @@ def _wh_ratio_worker(args):
     line, delimiter, data_dir = args
     try:
         text = line.decode('utf-8')
-        substr = text.strip('\n').split(delimiter)
+        substr = text.rstrip('\r\n').split(delimiter)
+        if len(substr) < 2:
+            return 1.0
         file_name = substr[0]
         if len(file_name) > 0 and file_name[0] == '[':
             try:
@@ -176,7 +178,9 @@ class SimpleDatasetTVResize(Dataset):
         line, data_dir = self.data_lines[line_idx]
         try:
             text = line.decode('utf-8')
-            substr = text.strip('\n').split(self.delimiter)
+            substr = text.rstrip('\r\n').split(self.delimiter)
+            if len(substr) < 2:
+                return None
             file_name = substr[0]
             file_name = self._try_parse_filename_list(file_name)
             label = substr[1]
@@ -187,7 +191,7 @@ class SimpleDatasetTVResize(Dataset):
                 imgbuf = f.read()
             if not imgbuf:
                 return None
-            return imgbuf, label
+            return imgbuf, label, img_path
         except Exception:
             return None
 
@@ -199,7 +203,7 @@ class SimpleDatasetTVResize(Dataset):
             if info is None:
                 wh_ratio.append(1.0)
             else:
-                imgbuf, _ = info
+                imgbuf, _, _ = info
                 w, h = Image.open(io.BytesIO(imgbuf)).size
                 wh_ratio.append(float(w) / float(h))
         return wh_ratio
@@ -285,10 +289,10 @@ class SimpleDatasetTVResize(Dataset):
                 ratio_ids = list(range(len(self)))
             ids = random.sample(ratio_ids, 1)
             return self.__getitem__([img_width, img_height, ids[0], ratio])
-        img, label = sample_info
-        data = {'image': img, 'label': label}
+        img, label, img_path = sample_info
+        data = {'image': img, 'label': label, "img_path": img_path}
         outs = transform(data, self.ops[:-1])
-        if outs is not None:
+        if outs is not None and hasattr(outs.get('image', None), 'size'):
             outs = self.resize_norm_img(outs, ratio, padding=self.padding)
             if outs is None:
                 ratio_ids = np.where(self.wh_ratio == ratio)[0].tolist()
@@ -298,6 +302,8 @@ class SimpleDatasetTVResize(Dataset):
                 return self.__getitem__(
                     [img_width, img_height, ids[0], ratio])
             outs = transform(outs, self.ops[-1:])
+        elif outs is not None:
+            outs = None
         if outs is None:
             ratio_ids = np.where(self.wh_ratio == ratio)[0].tolist()
             if not ratio_ids:

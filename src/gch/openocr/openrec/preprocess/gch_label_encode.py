@@ -182,3 +182,7 @@ class QualityWrapperHeadLabelEncode:
             "inner_label": inner_encoder,
             "quality_label": DictWrapper()
         }
+
+    @property
+    def character_str(self)->List[str]:
+        return self.inner_encoder.character_str

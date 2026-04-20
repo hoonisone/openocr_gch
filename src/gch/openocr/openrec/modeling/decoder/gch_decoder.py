@@ -56,8 +56,10 @@ class QualityWrapperDecoder(nn.Module):
 
         inner_decoder['in_channels'] = in_channels
         inner_decoder['out_channels'] = out_channels
+        
         self.inner_decoder = build_decoder(inner_decoder)
         self.infer_distance = infer_quality
+
 
         self.quality_head = DistanceHead(
             in_channels=self.inner_decoder.feature_channels, 
@@ -272,6 +274,7 @@ class DistanceHead(nn.Module):
         self.out_channels = 1
         self.fc = nn.Linear(in_channels, self.out_channels)
         self.fc_temp = nn.Linear(9, self.out_channels)
+        self.fc_temp = None 
 
     def forward(self, x, data=None):
         # RCTC: train → logits; eval → softmax probs. Match that here.

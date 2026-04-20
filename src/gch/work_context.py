@@ -151,7 +151,8 @@ class WorkContext:
 
                 from pathlib import Path as _Path
 
-                _pretrained_model = None
+                _pretrained_model = (_Path(_weights_dir)/"pretrained.pth").resolve()
+                _pretrained_model = _pretrained_model.as_posix() if _pretrained_model.exists() else None
 
                 _checkpoints = (_Path(_weights_dir)/"latest.pth").resolve()
                 _checkpoints = _checkpoints.as_posix() if _checkpoints.exists() else None
@@ -381,13 +382,15 @@ class EvalTaskContext(TaskContext):
         import yaml
         path = self.eval_result_path
         with open(path, "w") as f:
-            yaml.dump(result, f)
+            yaml.dump(result, f, allow_unicode=True)
+
+            
 
     def is_evaluated(self)->bool:
-        if not self.eval_result_path.exists():
-            return False
-        if self.eval_result() is None:
-            return False
-        if len(self.eval_result()) == 0:
-            return False
-        return True
+        return self.eval_result_path.exists()
+        #     return False
+        # if self.eval_result_path is None:
+        #     return False
+        # # if len(self.eval_result()) == 0:
+        # #     return False
+        # return True

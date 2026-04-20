@@ -12,7 +12,7 @@ class GCHPostProcess(object):
         self.use_c = use_c
         self.use_g = use_g
         self.ensemble = GCHEnsemble()
-        self.super_ensemble = SuperGCHEnsemble()
+        self.super_ensemble = SuperGCHSequenceLevelEnsemble()
 
     def __call__(self, preds, batch=None, *args, **kwargs):
         # 원래 코드는 batch 맨 앞에 이미지가 있으나 ['c_label'] 등을 선택하면 한 칸씩 밀림
@@ -23,26 +23,76 @@ class GCHPostProcess(object):
         if self.use_g:
             result['g_pred'] = self.g_postprocess(preds['g_pred'], batch=batch['g_label'], *args, **kwargs)
         
-        if self.use_c and "quality_pred" in result['c_pred']['pred'] and self.use_g and "quality_pred" in result['g_pred']['pred']:
-            c_pred = result["c_pred"]["pred"]['inner_pred'][0]
-            c_quality = result["c_pred"]["pred"]['quality_pred'][0]
-            c_label = result["c_pred"]['pred']["inner_pred"][1]
-            g_pred = result['g_pred']["pred"]['inner_pred'][0]
-            g_quality = result['g_pred']["pred"]['quality_pred'][0]
-            g_label = result['g_pred']["pred"]['inner_pred'][1]
+        if self.use_c and self.use_g:
+            try: # 모델 아키텍처 마다 key 깊이가 달라서. 일단 이렇게 해결결
+                c_pred = result["c_pred"]["pred"]['inner_pred'][0]
+                c_label = result["c_pred"]['pred']["inner_pred"][1]
+                g_pred = result['g_pred']["pred"]['inner_pred'][0]
+                g_label = result['g_pred']["pred"]['inner_pred'][1]
+            except:
+                c_pred = result["c_pred"]['inner_pred'][0]
+                c_label = result["c_pred"]['inner_pred'][1]
+                g_pred = result['g_pred']['inner_pred'][0]
+                g_label = result['g_pred']['inner_pred'][1]
 
-            result['e_pred'] = self.ensemble(c_pred, c_quality, c_label, g_pred, g_quality, g_label)
-            result['o_pred'] = self.super_ensemble(c_pred, c_quality, c_label, g_pred, g_quality, g_label)
+            result['o_pred'] = self.super_ensemble(c_pred, c_label, g_pred, g_label)
+            
+
+        # if self.use_c and "quality_pred" in result['c_pred']['pred'] and self.use_g and "quality_pred" in result['g_pred']['pred']:
+        #     c_pred = result["c_pred"]["pred"]['inner_pred'][0]
+        #     c_quality = result["c_pred"]["pred"]['quality_pred'][0]
+        #     c_label = result["c_pred"]['pred']["inner_pred"][1]
+        #     g_pred = result['g_pred']["pred"]['inner_pred'][0]
+        #     g_quality = result['g_pred']["pred"]['quality_pred'][0]
+        #     g_label = result['g_pred']["pred"]['inner_pred'][1]
+
+        #     result['e_pred'] = self.ensemble(c_pred, c_quality, c_label, g_pred, g_quality, g_label)
 
         return result
 
     
+    @property
     def get_character_num(self):
         result = {}
-        result['c_num'] = self.c_postprocess.get_character_num()
-        result['g_num'] = self.g_postprocess.get_character_num()
+        result['c_num'] = self.c_postprocess.get_character_num
+        result['g_num'] = self.g_postprocess.get_character_num
         
         return result
+
+class GCHEnsemble_Temp(object):
+    def __init__(self):
+        self.korean_transformer = KoreanTransfomer()
+
+    def __call__(self, c_pred, c_quality, c_label, g_pred, g_quality, g_label):
+        preds = []
+        labels = []
+        for c_p, c_q, c_l, g_p, g_q, g_l in zip(c_pred, c_quality, c_label, g_pred, g_quality, g_label):
+
+            
+            if c_q > 0.7:
+                c_win = True
+            else:
+                if c_q > g_q:
+                    c_win = True
+                else:
+                    c_win = False
+
+            if c_win: # 퀄리티가 더 높은 것을 선택
+                _c_p, _ = c_p
+                _c_p = ''.join(self.korean_transformer.c2g(_c_p))
+                c_p = (_c_p, _)
+
+                _c_l, _ = c_l
+                _c_l = ''.join(self.korean_transformer.c2g(_c_l))
+                c_l = (_c_l, _)
+                preds.append(c_p)
+                labels.append(c_l)
+            else:
+                preds.append(g_p)
+                labels.append(g_l)
+        return preds, labels
+
+
 
 class GCHEnsemble(object):
     def __init__(self):
@@ -67,16 +117,20 @@ class GCHEnsemble(object):
                 labels.append(g_l)
         return preds, labels
 
-class SuperGCHEnsemble(object):
+class SuperGCHSequenceLevelEnsemble(object):
+    """ 
+        항상 더 나은 것을 선택하는 Sequence Level Ensemble
+        앙상블에 대한 upper bound 확인용
+    """
     def __init__(self):
         self.korean_transformer = KoreanTransfomer()
 
-    def __call__(self, c_pred, c_quality, c_label, g_pred, g_quality, g_label):
+    def __call__(self, c_pred, c_label, g_pred, g_label):
         preds = []
         labels = []
-        for c_p, c_q, c_l, g_p, g_q, g_l in zip(c_pred, c_quality, c_label, g_pred, g_quality, g_label):
-            c_q = 1-Levenshtein.normalized_distance(c_pred[0], c_label[0])
-            g_q = 1-Levenshtein.normalized_distance(g_pred[0], g_label[0])
+        for c_p, c_l, g_p, g_l in zip(c_pred, c_label, g_pred, g_label):
+            c_q = 1-Levenshtein.normalized_distance(''.join(self.korean_transformer.c2g(c_p[0])), ''.join(self.korean_transformer.c2g(c_l[0])))
+            g_q = 1-Levenshtein.normalized_distance(g_p[0], g_l[0])
             if c_q > g_q:
                 _c_p, _ = c_p
                 _c_p = ''.join(self.korean_transformer.c2g(_c_p))
@@ -148,4 +202,6 @@ class QualityWrapperPostProcess(object):
         dis_labels = torch.tensor(dis_labels, dtype=torch.float32, device=device)
         return dis_labels
 
-    
+    @property
+    def get_character_num(self):
+        return self.inner_postprocess.get_character_num

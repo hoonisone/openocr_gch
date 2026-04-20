@@ -84,12 +84,14 @@ class RecGCHMetric(object):
                 pred_label["g_pred"], batch["g_label"], training=training
             )
 
+        if self.use_c and self.use_g:
+            result["o_metric"] = self.o_metric(
+                pred_label["o_pred"], batch["g_label"], training=training
+            )
+
         if self.use_e:
             result["e_metric"] = self.e_metric(
                 pred_label["e_pred"], batch["g_label"], training=training # batch는 내부적으로 사용하지 않으며, 심지어 pred는 g 단위로 맞춰놨기에 batch['g_label'] 을 넘긴다.
-            )
-            result["o_metric"] = self.o_metric(
-                pred_label["o_pred"], batch["g_label"], training=training
             )
 
         
@@ -98,20 +100,26 @@ class RecGCHMetric(object):
     def main_indicator(self) -> str:
         return f"c_metric.{self.c_metric.main_indicator}"
 
-    def get_metric(self):
+    def get_metric(self, training:bool=False):
         result = {}
         if self.use_c:
-            for k, v in self.c_metric.get_metric().items():
+            for k, v in self.c_metric.get_metric(training=training).items():
                 result[f"c_metric.{k}"] = v
         if self.use_g:
-            for k, v in self.g_metric.get_metric().items():
+            for k, v in self.g_metric.get_metric(training=training).items():
                 result[f"g_metric.{k}"] = v
 
+        if self.use_c and self.use_g:
+            for k, v in self.o_metric.get_metric(training=training).items():
+                result[f"o_metric.{k}"] = v
+
         if self.use_e:
-            for k, v in self.e_metric.get_metric().items():
+            for k, v in self.e_metric.get_metric(training=training).items():
                 result[f"e_metric.{k}"] = v
 
+
         return result
+
 
 
 class QualityMetric(object):
@@ -139,7 +147,7 @@ class QualityMetric(object):
 
         return {"mae": float(mae), "mse": float(mse), "rmse": float(rmse)}
 
-    def get_metric(self):
+    def get_metric(self, training:bool=False):
         result = {
             "mae": self.sum_abs_error / (self.sample_count + self.eps),
             "mse": self.sum_squared_error / (self.sample_count + self.eps),
@@ -201,11 +209,11 @@ class QualityWrapperMetric(object):
             )
         return result
 
-    def get_metric(self):
+    def get_metric(self, training:bool=False):
         result = {}
-        for k, v in self.inner_metric.get_metric().items():
+        for k, v in self.inner_metric.get_metric(training=training).items():
             result[f"inner.{k}"] = v
         if self.infer_quality and self.quality_metric is not None:
-            for k, v in self.quality_metric.get_metric().items():
+            for k, v in self.quality_metric.get_metric(training=training).items():
                 result[f"quality.{k}"] = v
         return result

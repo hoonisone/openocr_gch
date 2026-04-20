@@ -1,4 +1,5 @@
 import datetime
+import json
 import os
 import random
 import time
@@ -236,7 +237,7 @@ class GCHTrainer(object):
                     self.cfg['Architecture']['decoder_config'])
                 self.model = CMER(config=cfg_model)
         else:
-            char_num = self.post_process_class.get_character_num()
+            char_num = self.post_process_class.get_character_num
 
             self.cfg['Architecture']['Decoder']['c_decoder']['out_channels'] = char_num['c_num']
             self.cfg['Architecture']['Decoder']['g_decoder']['out_channels'] = char_num['g_num']
@@ -460,7 +461,7 @@ class GCHTrainer(object):
                                                           batch_numpy,
                                                           training=True)
                     self.eval_class(post_result, batch_numpy, training=True)
-                    metric = self.eval_class.get_metric()
+                    metric = self.eval_class.get_metric(training=True)
                     metric = _flatten_dict(metric)
                     train_stats.update(metric)
 
@@ -607,6 +608,66 @@ class GCHTrainer(object):
 
     def eval(self):
         self.model.eval()
+        save_infer_results = False
+        save_infer_results_path = (
+            Path(self.cfg['Global']['output_dir']) / 'eval_infer_results.jsonl'
+        ).resolve().as_posix()
+        infer_records = []
+
+        def _to_jsonable(value):
+            if isinstance(value, torch.Tensor):
+                return value.detach().cpu().tolist()
+            if isinstance(value, np.ndarray):
+                return value.tolist()
+            if isinstance(value, np.generic):
+                return value.item()
+            if isinstance(value, dict):
+                return {k: _to_jsonable(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [_to_jsonable(v) for v in value]
+            if isinstance(value, bytes):
+                return value.decode('utf-8', errors='replace')
+            return value
+
+        def _extract_image_paths(batch_data, batch_data_numpy, batch_size):
+            candidate = None
+            for source in (batch_data, batch_data_numpy):
+                if not isinstance(source, dict):
+                    continue
+                for key in ('img_path', 'image_path', 'path', 'file_path'):
+                    if key in source:
+                        candidate = source[key]
+                        break
+                if candidate is not None:
+                    break
+
+            if candidate is None:
+                return [None] * batch_size
+            if isinstance(candidate, np.ndarray):
+                candidate = candidate.tolist()
+            elif not isinstance(candidate, (list, tuple)):
+                candidate = [candidate]
+            paths = [_to_jsonable(x) for x in candidate]
+            if len(paths) < batch_size:
+                paths.extend([None] * (batch_size - len(paths)))
+            return paths[:batch_size]
+
+        def _extract_sample_result(value, sample_idx, batch_size):
+            if isinstance(value, dict):
+                return {
+                    k: _extract_sample_result(v, sample_idx, batch_size)
+                    for k, v in value.items()
+                }
+            if isinstance(value, list):
+                if len(value) == batch_size:
+                    return _extract_sample_result(
+                        value[sample_idx], sample_idx, batch_size)
+                return [
+                    _extract_sample_result(v, sample_idx, batch_size)
+                    for v in value
+                ]
+            return value
+
         with torch.no_grad():
             total_frame = 0.0
             total_time = 0.0
@@ -638,6 +699,18 @@ class GCHTrainer(object):
                 # Evaluate the results of the current batch
                 post_result = self.post_process_class(preds, batch_numpy)
                 self.eval_class(post_result, batch_numpy)
+                if save_infer_results:
+                    batch_size = len(batch['image'])
+                    image_paths = _extract_image_paths(
+                        batch, batch_numpy, batch_size=batch_size)
+                    post_result_json = _to_jsonable(post_result)
+                    for sample_idx in range(batch_size):
+                        infer_records.append({
+                            'image_path': image_paths[sample_idx],
+                            'post_result':
+                            _extract_sample_result(post_result_json,
+                                                   sample_idx, batch_size),
+                        })
 
                 pbar.update(1)
                 total_frame += len(batch["image"])
@@ -647,6 +720,15 @@ class GCHTrainer(object):
 
         pbar.close()
         self.model.train()
+        if save_infer_results:
+            save_dir = os.path.dirname(save_infer_results_path)
+            if save_dir:
+                os.makedirs(save_dir, exist_ok=True)
+            with open(save_infer_results_path, 'w', encoding='utf-8') as f:
+                for record in infer_records:
+                    f.write(json.dumps(record, ensure_ascii=False) + '\n')
+            self.logger.info(
+                f'saved eval inference results: {save_infer_results_path}')
         metric['fps'] = total_frame / total_time
         return metric
 
