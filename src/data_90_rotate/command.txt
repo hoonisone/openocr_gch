@@ -1,0 +1,32 @@
+# AIhub
+python rotate_vertical_ppocr.py \
+  --data_dir /home/resources/shared_datasets/STR/AIHub_STR_v1.1/images \
+  --label_file /home/resources/shared_datasets/STR/AIHub_STR_v1.1/labels/all/all.txt \
+  --out_data_dir /home/resources/shared_datasets/STR/AIHub_STR_v1.1___ratio_1.5_90_rotate/images \
+  --out_label_file /home/resources/shared_datasets/STR/AIHub_STR_v1.1/all.txt  \
+  --threshold 1.5 \
+  --num_workers 32 \
+  --chunksize 256
+
+
+# Synth Vertical
+python rotate_vertical_ppocr.py \
+  --data_dir /home/resources/shared_datasets/STR/AIHub_STR_v1.1___synth/train/vertical/images \
+  --label_file /home/resources/shared_datasets/STR/AIHub_STR_v1.1___synth/train/vertical/gt.txt \
+  --out_data_dir /home/resources/shared_datasets/STR/AIHub_STR_v1.1___synth/train/vertical/90_rotate_images \
+  --out_label_file /home/resources/shared_datasets/STR/AIHub_STR_v1.1___synth/train/vertical/90_rotate_gt.txt\
+  --threshold 1.5 \
+  --num_workers 32 \
+  --chunksize 256
+
+
+  
+# Synth Horizontal
+python rotate_vertical_ppocr.py \
+  --data_dir /home/resources/shared_datasets/STR/AIHub_STR_v1.1___synth/train/horizontal/images \
+  --label_file /home/resources/shared_datasets/STR/AIHub_STR_v1.1___synth/train/horizontal/gt.txt \
+  --out_data_dir /home/resources/shared_datasets/STR/AIHub_STR_v1.1___synth/train/horizontal/90_rotate_images \
+  --out_label_file /home/resources/shared_datasets/STR/AIHub_STR_v1.1___synth/train/horizontal/90_rotate_gt.txt\
+  --threshold 1.5 \
+  --num_workers 32 \
+  --chunksize 256

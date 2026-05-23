@@ -134,6 +134,7 @@ def resolve_image_path(
     # default: relative to image_root
     if recursive:
         return image_root / p
+    print(recursive)
     return image_root / p.name
 
 

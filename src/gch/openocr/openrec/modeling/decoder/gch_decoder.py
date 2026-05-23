@@ -8,12 +8,15 @@ class GCHDecoder(nn.Module):
     def __init__(self, c_decoder, g_decoder, in_channels, 
         use_c:bool = True, 
         use_g:bool = True, 
+        out_channels:dict = None,
         # use_distance_head:bool = True,
         **kwargs
     ):
         super(GCHDecoder, self).__init__()
         c_decoder['in_channels'] = in_channels
         g_decoder['in_channels'] = in_channels
+        c_decoder['out_channels'] = out_channels['c_num']
+        g_decoder['out_channels'] = out_channels['g_num']
         self.c_decoder = build_decoder(c_decoder)
         self.g_decoder = build_decoder(g_decoder)
         self.use_c = use_c
@@ -289,3 +292,7 @@ class DistanceHead(nn.Module):
 
 class_to_module['GCHDecoder'] = 'gch.openocr.openrec.modeling.decoder.gch_decoder'
 class_to_module['QualityWrapperDecoder'] = 'gch.openocr.openrec.modeling.decoder.gch_decoder'
+class_to_module['NewGTCDecoder'] = (
+    'gch.openocr.openrec.modeling.decoder.new_gtc_decoder')
+class_to_module['NewGTCDecoderTwo'] = (
+    'gch.openocr.openrec.modeling.decoder.new_gtc_decoder')

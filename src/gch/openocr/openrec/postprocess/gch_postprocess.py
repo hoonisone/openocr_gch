@@ -4,6 +4,10 @@ import torch
 
 module_mapping['GCHPostProcess'] = 'gch.openocr.openrec.postprocess.gch_postprocess'
 module_mapping['QualityWrapperPostProcess'] = 'gch.openocr.openrec.postprocess.gch_postprocess'
+module_mapping['NewGTCLabelDecode'] = (
+    'gch.openocr.openrec.postprocess.new_gtc_postprocess')
+module_mapping['NewARLabelDecode'] = (
+    'gch.openocr.openrec.postprocess.new_ar_postprocess')
 
 class GCHPostProcess(object):
     def __init__(self, c_postprocess, g_postprocess, use_c:bool = True, use_g:bool = True, **kwargs):
@@ -51,11 +55,11 @@ class GCHPostProcess(object):
         return result
 
     
-    @property
+
     def get_character_num(self):
         result = {}
-        result['c_num'] = self.c_postprocess.get_character_num
-        result['g_num'] = self.g_postprocess.get_character_num
+        result['c_num'] = self.c_postprocess.get_character_num()
+        result['g_num'] = self.g_postprocess.get_character_num()
         
         return result
 
@@ -202,6 +206,6 @@ class QualityWrapperPostProcess(object):
         dis_labels = torch.tensor(dis_labels, dtype=torch.float32, device=device)
         return dis_labels
 
-    @property
+
     def get_character_num(self):
         return self.inner_postprocess.get_character_num

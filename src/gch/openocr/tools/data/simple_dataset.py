@@ -47,6 +47,21 @@ class GCHSimpleDataset(Dataset):
             data_dir_list = [data_dir_list]
         assert len(data_dir_list) == data_source_num, (
             'The length of data_dir_list should be the same as the file_list.')
+        missing_label_files = [
+            path for path in label_file_list if not os.path.isfile(path)
+        ]
+        if missing_label_files:
+            raise FileNotFoundError(
+                'Missing label_file_list paths:\n' +
+                '\n'.join(f'  - {path}' for path in missing_label_files))
+
+        missing_data_dirs = [
+            path for path in data_dir_list if not os.path.isdir(path)
+        ]
+        if missing_data_dirs:
+            raise FileNotFoundError(
+                'Missing data_dir_list paths:\n' +
+                '\n'.join(f'  - {path}' for path in missing_data_dirs))
 
         self.do_shuffle = loader_config['shuffle']
         self.seed = seed

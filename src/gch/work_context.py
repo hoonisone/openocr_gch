@@ -306,7 +306,7 @@ class TaskContext:
 
 class TrainTaskContext(TaskContext):
     def make_train_command(self)->str:
-        return f"python /home/src/gch/openocr/tools/train_rec_gch.py --work_id {self.work_record.id} --task_id {self.task_record.id}"
+        return f"python /home/src/gch/openocr/tools/train_rec.py --work_id {self.work_record.id} --task_id {self.task_record.id}"
     
 
     def does_weight_exists(self, epoch:int)->bool:

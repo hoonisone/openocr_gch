@@ -103,3 +103,4 @@ class QualityWrapperLoss(nn.Module):
 
 name_to_module['GCHLoss'] = 'gch.openocr.openrec.losses.gch_loss'
 name_to_module['QualityWrapperLoss'] = 'gch.openocr.openrec.losses.gch_loss'
+name_to_module['NewGTCLoss'] = 'gch.openocr.openrec.losses.new_gtc_loss'

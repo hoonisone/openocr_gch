@@ -69,6 +69,8 @@ class RMFactory:
 work_db = RMFactory().work_db
 config_manager = RMFactory().config_manager
 
+from cfgfw.elements.base import File
+
 def _record(id:int)->GCHRecord:
     return work_db.get_record(id)
 

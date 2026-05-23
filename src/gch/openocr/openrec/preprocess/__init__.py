@@ -1,5 +1,8 @@
 from .gch_label_encode import GCHLabelEncode
+from openocr.tools.utils.logging import get_logger
 
+
+only_one_log_print_flat = False # 중복이 많을 것 같아 한 번만 출력하기 위한 플래그
 
 def _extract_by_keep_keys(data, keep_keys):
     """Extract values from data with the same tree shape as keep_keys.
@@ -18,6 +21,11 @@ def _extract_by_keep_keys(data, keep_keys):
     if isinstance(keep_keys, dict):
         out = {}
         for key, child in keep_keys.items():
+            if key not in data:
+                if only_one_log_print_flat:
+                    get_logger().warning(f"Key {key} not found in data, this log will be printed only once for 간결함, you need to check if more key not found in data is exists")
+                    only_one_log_print_flat = True
+                continue
             out[key] = _extract_by_keep_keys(data[key], child)
         return out
     raise TypeError(
@@ -27,7 +35,9 @@ def _extract_by_keep_keys(data, keep_keys):
 
 class HierarchyKeepKeys:
 
-    def __init__(self, keep_keys, **kwargs):
+    def __init__(self, 
+        keep_keys, 
+        **kwargs):
         self.keep_keys = keep_keys
 
     def __call__(self, data):
@@ -35,4 +45,11 @@ class HierarchyKeepKeys:
 
 
 from openocr.openrec.preprocess import MODULE_MAPPING
+
 MODULE_MAPPING['HierarchyKeepKeys'] = 'gch.openocr.openrec.preprocess'
+MODULE_MAPPING['NewGTCLabelEncode'] = (
+    'gch.openocr.openrec.preprocess.new_gtc_label_encode')
+MODULE_MAPPING['NewVisionLANLabelEncode'] = (
+    'gch.openocr.openrec.preprocess.new_visionlan_label_encode')
+MODULE_MAPPING['TilingAug'] = 'gch.openocr.openrec.preprocess.tiling_aug'
+MODULE_MAPPING['HV_90Rotate'] = 'gch.openocr.openrec.preprocess.hv_rotate'

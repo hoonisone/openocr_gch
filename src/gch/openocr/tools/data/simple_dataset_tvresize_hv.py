@@ -13,8 +13,8 @@ from torchvision.transforms import functional as F
 from openocr.openrec.preprocess import create_operators, transform
 
 import openocr.tools.data as data_mod
-data_mod.DATASET_MODULES['SimpleDatasetTVResize'] = (
-    'gch.openocr.tools.data.simple_dataset_tvresize')
+data_mod.DATASET_MODULES['SimpleDatasetTVResize_HV'] = (
+    'gch.openocr.tools.data.simple_dataset_tvresize_hv')
 
 
 def _wh_ratio_worker(args):
@@ -23,7 +23,7 @@ def _wh_ratio_worker(args):
         text = line.decode('utf-8')
         substr = text.rstrip('\r\n').split(delimiter)
         if len(substr) < 2:
-            return 1.0
+            return 1.0, 1
         file_name = substr[0]
         if len(file_name) > 0 and file_name[0] == '[':
             try:
@@ -33,17 +33,22 @@ def _wh_ratio_worker(args):
                 pass
         img_path = os.path.join(data_dir, file_name)
         if not os.path.exists(img_path):
-            return 1.0
+            return 1.0, 1
         with Image.open(img_path) as img:
             w, h = img.size
-        if h == 0:
-            return 1.0
-        return float(w) / float(h)
+        if h == 0 or w == 0:
+            return 1.0, 1
+        # Keep ratio buckets >= 1 for RatioSampler compatibility while
+        # preserving vertical difficulty via h/w for portrait samples.
+        ratio_wh = float(w) / float(h)
+        ratio = max(ratio_wh, 1.0 / ratio_wh)
+        orientation = 1 if ratio_wh >= 1.0 else 0
+        return ratio, orientation
     except Exception:
-        return 1.0
+        return 1.0, 1
 
 
-class SimpleDatasetTVResize(Dataset):
+class SimpleDatasetTVResize_HV(Dataset):
     """Simple label_file_list + data_dir layout with RatioDataSetTVResize behavior.
 
     Use with ``RatioSampler`` and the same dataset config keys as
@@ -120,8 +125,10 @@ class SimpleDatasetTVResize(Dataset):
         self.ops = create_operators(dataset_config['transforms'],
                                     global_config)
 
-        wh_ratio = np.around(np.array(self.get_wh_ratio()))
+        wh_ratio_raw, wh_orientation = self.get_wh_ratio()
+        wh_ratio = np.around(np.array(wh_ratio_raw))
         self.wh_ratio = np.clip(wh_ratio, a_min=min_ratio, a_max=max_ratio)
+        self.wh_orientation = np.array(wh_orientation, dtype=np.int32)
         for i in range(max_ratio + 1):
             logger.info((1 * (self.wh_ratio == i)).sum())
         self.wh_ratio_sort = np.argsort(self.wh_ratio)
@@ -131,6 +138,9 @@ class SimpleDatasetTVResize(Dataset):
         self.base_shape = dataset_config.get(
             'base_shape', [[64, 64], [96, 48], [112, 40], [128, 32]])
         self.base_h = dataset_config.get('base_h', 32)
+        self.base_shape_v = dataset_config.get(
+            'base_shape_v', [[64, 64], [48, 96], [40, 112], [32, 128]])
+        self.base_w = dataset_config.get('base_w', 32)
         self.interpolation = T.InterpolationMode.BICUBIC
         self.transforms = T.Compose([
             T.ToTensor(),
@@ -212,16 +222,24 @@ class SimpleDatasetTVResize(Dataset):
 
     def _get_wh_ratio(self):
         wh_ratio = []
+        wh_orientation = []
         for idx in range(self.data_idx_order_list.shape[0]):
             line_idx = int(self.data_idx_order_list[idx, 1])
             info = self._get_sample_bytes_and_label(line_idx)
             if info is None:
                 wh_ratio.append(1.0)
+                wh_orientation.append(1)
             else:
                 imgbuf, _, _ = info
                 w, h = Image.open(io.BytesIO(imgbuf)).size
-                wh_ratio.append(float(w) / float(h))
-        return wh_ratio
+                if h == 0 or w == 0:
+                    wh_ratio.append(1.0)
+                    wh_orientation.append(1)
+                else:
+                    ratio_wh = float(w) / float(h)
+                    wh_ratio.append(max(ratio_wh, 1.0 / ratio_wh))
+                    wh_orientation.append(1 if ratio_wh >= 1.0 else 0)
+        return wh_ratio, wh_orientation
 
     def get_wh_ratio(self):
         return self._get_wh_ratio_multiprocessing(num_workers=30)
@@ -247,48 +265,91 @@ class SimpleDatasetTVResize(Dataset):
 
         # Keep output order aligned with data_idx_order_list.
         with mp.Pool(processes=num_workers) as pool:
-            wh_ratio = list(
-                pool.imap(_wh_ratio_worker, tasks, chunksize=chunksize))
-        return wh_ratio
+            wh_info = list(pool.imap(_wh_ratio_worker, tasks, chunksize=chunksize))
+        if not wh_info:
+            return [], []
+        wh_ratio, wh_orientation = zip(*wh_info)
+        return list(wh_ratio), list(wh_orientation)
 
     def resize_norm_img(self, data, gen_ratio, padding=True):
         img = data['image']
         w, h = img.size
+        if w == 0 or h == 0:
+            return None
         if self.padding_rand and random.random() < 0.5:
             padding = not padding
-        if gen_ratio <= 4:
-            imgW, imgH = self.base_shape[gen_ratio - 1]
+        # Orientation-aware branch:
+        # - landscape/square: use horizontal base_shape/base_h and ratio w/h
+        # - portrait: use vertical base_shape_v/base_w and ratio h/w
+        ratio_wh = float(w) / float(h)
+        is_horizontal = ratio_wh >= 1.0
+        resized_w = imgW = 0
+        resized_h = imgH = 0
+        if is_horizontal:
+            if gen_ratio <= 4:
+                imgW, imgH = self.base_shape[gen_ratio - 1]
+            else:
+                imgW = self.base_h * gen_ratio
+                imgH = self.base_h
         else:
-            imgW = self.base_h * gen_ratio
-            imgH = self.base_h
+            if gen_ratio <= 4:
+                imgW, imgH = self.base_shape_v[gen_ratio - 1]
+            else:
+                imgW = self.base_w
+                imgH = self.base_w * gen_ratio
         imgW, imgH = int(imgW), int(imgH)
-        use_ratio = imgW // imgH
-        if use_ratio >= (w // h) + 2:
-            self.error += 1
-            return None
-        if not padding:
-            resized_w = imgW
-        else:
-            ratio = w / float(h)
-            if math.ceil(imgH * ratio) > imgW:
+        if is_horizontal:
+            use_ratio = imgW // imgH
+            if use_ratio >= (w // h) + 2:
+                self.error += 1
+                return None
+            if not padding:
                 resized_w = imgW
             else:
-                resized_w = int(
-                    math.ceil(imgH * ratio * (random.random() + 0.5)))
-                resized_w = min(imgW, resized_w)
-        resized_image = F.resize(
-            img, [imgH, int(resized_w)], interpolation=self.interpolation)
+                ratio = w / float(h)
+                if math.ceil(imgH * ratio) > imgW:
+                    resized_w = imgW
+                else:
+                    resized_w = int(
+                        math.ceil(imgH * ratio * (random.random() + 0.5)))
+                    resized_w = min(imgW, resized_w)
+            resized_image = F.resize(
+                img, [imgH, int(resized_w)], interpolation=self.interpolation)
+        else:
+            use_ratio = imgH // imgW
+            if use_ratio >= (h // w) + 2:
+                self.error += 1
+                return None
+            if not padding:
+                resized_h = imgH
+            else:
+                ratio = h / float(w)
+                if math.ceil(imgW * ratio) > imgH:
+                    resized_h = imgH
+                else:
+                    resized_h = int(
+                        math.ceil(imgW * ratio * (random.random() + 0.5)))
+                    resized_h = min(imgH, resized_h)
+            resized_image = F.resize(
+                img, [int(resized_h), imgW], interpolation=self.interpolation)
         img = self.transforms(resized_image)
-        if resized_w < imgW and padding:
+        if is_horizontal and resized_w < imgW and padding:
             if self.padding_doub and random.random() < 0.5:
                 img = F.pad(img, [0, 0, imgW - resized_w, 0], fill=0.)
             else:
                 img = F.pad(img, [imgW - resized_w, 0, 0, 0], fill=0.)
-        valid_ratio = min(1.0, float(resized_w / imgW))
+            valid_ratio = min(1.0, float(resized_w / imgW))
+        elif (not is_horizontal) and resized_h < imgH and padding:
+            if self.padding_doub and random.random() < 0.5:
+                img = F.pad(img, [0, 0, 0, imgH - resized_h], fill=0.)
+            else:
+                img = F.pad(img, [0, imgH - resized_h, 0, 0], fill=0.)
+            valid_ratio = min(1.0, float(resized_h / imgH))
+        else:
+            valid_ratio = 1.0
         data['image'] = img
         data['valid_ratio'] = valid_ratio
-        r = float(w) / float(h)
-        data['real_ratio'] = max(1, round(r))
+        data['real_ratio'] = max(1, round(max(ratio_wh, 1.0 / ratio_wh)))
         return data
 
     def __getitem__(self, properties):
@@ -296,35 +357,38 @@ class SimpleDatasetTVResize(Dataset):
         img_height = properties[1]
         idx = properties[2]
         ratio = properties[3]
+        target_orientation = 1 if img_width >= img_height else 0
+
+        def _sample_fallback_id():
+            ratio_ids = np.where(self.wh_ratio == ratio)[0]
+            if ratio_ids.size > 0:
+                ratio_orient = self.wh_orientation[ratio_ids]
+                oriented_ratio_ids = ratio_ids[ratio_orient == target_orientation]
+                if oriented_ratio_ids.size > 0:
+                    return random.choice(oriented_ratio_ids.tolist())
+                return random.choice(ratio_ids.tolist())
+            return random.randrange(len(self))
+
         line_idx = int(self.data_idx_order_list[idx, 1])
         sample_info = self._get_sample_bytes_and_label(line_idx)
         if sample_info is None:
-            ratio_ids = np.where(self.wh_ratio == ratio)[0].tolist()
-            if not ratio_ids:
-                ratio_ids = list(range(len(self)))
-            ids = random.sample(ratio_ids, 1)
-            return self.__getitem__([img_width, img_height, ids[0], ratio])
+            fallback_id = _sample_fallback_id()
+            return self.__getitem__([img_width, img_height, fallback_id, ratio])
         img, label, img_path = sample_info
         data = {'image': img, 'label': label, "img_path": img_path}
         outs = transform(data, self.ops[:-1])
         if outs is not None and hasattr(outs.get('image', None), 'size'):
             outs = self.resize_norm_img(outs, ratio, padding=self.padding)
             if outs is None:
-                ratio_ids = np.where(self.wh_ratio == ratio)[0].tolist()
-                if not ratio_ids:
-                    ratio_ids = list(range(len(self)))
-                ids = random.sample(ratio_ids, 1)
+                fallback_id = _sample_fallback_id()
                 return self.__getitem__(
-                    [img_width, img_height, ids[0], ratio])
+                    [img_width, img_height, fallback_id, ratio])
             outs = transform(outs, self.ops[-1:])
         elif outs is not None:
             outs = None
         if outs is None:
-            ratio_ids = np.where(self.wh_ratio == ratio)[0].tolist()
-            if not ratio_ids:
-                ratio_ids = list(range(len(self)))
-            ids = random.sample(ratio_ids, 1)
-            return self.__getitem__([img_width, img_height, ids[0], ratio])
+            fallback_id = _sample_fallback_id()
+            return self.__getitem__([img_width, img_height, fallback_id, ratio])
         return outs
 
     def __len__(self):

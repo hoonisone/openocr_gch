@@ -2,7 +2,7 @@
 from numbers import Real
 
 from gch.openocr.tools.engine.config import Config
-from gch.openocr.tools.engine.trainer import GCHTrainer as Trainer
+from gch.openocr.tools.engine.list_trainer import ListBased_NewTrainer as Trainer
 from gch.openocr.tools.utility import ArgsParser
 from gch import RMFactory
 

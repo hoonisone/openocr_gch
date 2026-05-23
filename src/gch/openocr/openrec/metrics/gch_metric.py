@@ -4,6 +4,7 @@ import torch
 MODULES["RecGCHMetric"] = "gch.openocr.openrec.metrics.gch_metric"
 MODULES["QualityWrapperMetric"] = "gch.openocr.openrec.metrics.gch_metric"
 MODULES["QualityMetric"] = "gch.openocr.openrec.metrics.gch_metric"
+MODULES["NewRecGTCMetric"] = "gch.openocr.openrec.metrics.new_rec_metric_gtc"
 
 
 def _apply_shared_recmetric_args(

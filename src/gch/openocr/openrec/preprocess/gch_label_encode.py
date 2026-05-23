@@ -2,12 +2,13 @@ from openocr.openrec.preprocess import MODULE_MAPPING, dynamic_import
 
 MODULE_MAPPING['GCHLabelEncode'] = 'gch.openocr.openrec.preprocess.gch_label_encode'
 MODULE_MAPPING['QualityWrapperHeadLabelEncode'] = 'gch.openocr.openrec.preprocess.gch_label_encode'
+MODULE_MAPPING['C2GTransformer'] = 'gch.openocr.openrec.preprocess.gch_label_encode'
 
 
 
 
 
-class GCHLabelEncode():
+class GCHLabelEncode:
     def __init__(self, c_encoder, g_encoder, use_c:bool = True, use_g:bool = True, **kwargs):
         self.use_c = use_c
         self.use_g = use_g
@@ -51,6 +52,16 @@ class GCHLabelEncode():
 
 
 from typing import List, Tuple, Union, Optional
+
+class C2GTransformer:
+    def __init__(self, **kwargs):
+        self.transformer = KoreanTransfomer(**kwargs)
+
+    def __call__(self, data:dict)->dict:
+        text = data["label"]
+        data["label"] = self.transformer.c2g(text)
+        return data
+
 
 class KoreanTransfomer:
 

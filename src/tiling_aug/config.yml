@@ -1,0 +1,23 @@
+image_dir: "/home/resources/shared_datasets/STR/AIHub_STR_v1.1/1_origin/images"
+# save_dir: "/home/resources/shared_datasets/STR/AIHub_STR_v1.1___tiling/images"
+save_dir: "/home/resources/shared_datasets/STR/AIHub_STR_v1.1___aug/hv_aware_tiling/images"
+
+rotate_range: 
+  - [-25, -20]
+  - [20, 25]
+rotate_mode: aspect_ratio_range_random  # range_random | aspect_ratio_range_random | aspect_ratio_fixed_random_direction
+use_rotate: true
+rotate_prob: 1.0
+
+use_tiling: true
+tiling_prob: 1.0
+crop: true
+fillcolor: null
+no_tiling_bg_mode: inpaint  # fillcolor | mean | inpaint
+
+extensions: [".jpg", ".jpeg", ".png", ".bmp", ".webp"]
+overwrite: false
+save_format: null
+seed: 42
+worker_num: 32
+thread_num: 1

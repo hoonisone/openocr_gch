@@ -18,7 +18,7 @@ from openocr.tools.utils.utility import AverageMeter
 import torch.distributed as dist
 from pathlib import Path
 
-__all__ = ['GCHTrainer']
+__all__ = ['DictBased_NewTrainer']
 
 
 # rank = int(os.environ.get('RANK', 0))  # torchrun 会提供 RANK
@@ -72,7 +72,7 @@ def _to_log_scalar(value):
     return float(value)
 
 
-class GCHTrainer(object):
+class DictBased_NewTrainer(object):
 
     def __init__(self, cfg, mode='train', task='rec'):
         self.cfg = cfg.cfg
@@ -114,8 +114,7 @@ class GCHTrainer(object):
         log_path = (Path(self.cfg['Global']['output_dir'])/'train.log').resolve().as_posix()
         self.logger = get_logger(
             'openrec' if task == 'rec' else 'opendet',
-            log_path
-            if 'train' in mode else None,
+            log_path if 'train' in mode else None,
         )
 
         cfg.print_cfg(self.logger.info)
@@ -237,11 +236,9 @@ class GCHTrainer(object):
                     self.cfg['Architecture']['decoder_config'])
                 self.model = CMER(config=cfg_model)
         else:
-            char_num = self.post_process_class.get_character_num
-
-            self.cfg['Architecture']['Decoder']['c_decoder']['out_channels'] = char_num['c_num']
-            self.cfg['Architecture']['Decoder']['g_decoder']['out_channels'] = char_num['g_num']
-
+            char_num = self.post_process_class.get_character_num()
+            decoder_cfg = self.cfg['Architecture']['Decoder']
+            decoder_cfg['out_channels'] = char_num
 
             self.model = build_rec_model(self.cfg['Architecture'])
         # build loss
@@ -608,7 +605,7 @@ class GCHTrainer(object):
 
     def eval(self):
         self.model.eval()
-        save_infer_results = False
+        save_infer_results = True
         save_infer_results_path = (
             Path(self.cfg['Global']['output_dir']) / 'eval_infer_results.jsonl'
         ).resolve().as_posix()
