@@ -1,6 +1,6 @@
 image_dir: "/home/resources/shared_datasets/STR/AIHub_STR_v1.1/1_origin/images"
 # save_dir: "/home/resources/shared_datasets/STR/AIHub_STR_v1.1___tiling/images"
-save_dir: "/home/resources/shared_datasets/STR/AIHub_STR_v1.1___aug/hv_aware_tiling/images"
+save_dir: "/home/resources/shared_datasets/STR/AIHub_STR_v1.1___aug/hv_aware_rotate/images"
 
 rotate_range: 
   - [-25, -20]
@@ -9,7 +9,7 @@ rotate_mode: aspect_ratio_range_random  # range_random | aspect_ratio_range_rand
 use_rotate: true
 rotate_prob: 1.0
 
-use_tiling: true
+use_tiling: false
 tiling_prob: 1.0
 crop: true
 fillcolor: null

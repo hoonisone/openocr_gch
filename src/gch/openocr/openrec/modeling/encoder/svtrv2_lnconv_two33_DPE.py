@@ -5,6 +5,11 @@ from typing import cast
 from torch.nn.init import kaiming_normal_, ones_, trunc_normal_, zeros_
 
 from openocr.openrec.modeling.common import DropPath, Identity, Mlp
+import openocr.openrec.modeling.encoders as encoder_mod
+
+encoder_mod.name_to_module['SVTRv2LNConvTwo33_DPE'] = (
+    'gch.openocr.openrec.modeling.encoder.svtrv2_lnconv_two33_DPE'
+)
 
 
 class ConvBNLayer(nn.Module):
@@ -33,7 +38,7 @@ class ConvBNLayer(nn.Module):
         self.norm = nn.BatchNorm2d(out_channels)
         self.act = act()
 
-    def forward(self, inputs):
+    def forward(self, inputs, direction=None):
         out = self.conv(inputs)
         out = self.norm(out)
         out = self.act(out)
@@ -61,7 +66,7 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x):
+    def forward(self, x, direction=None):
         B, N, _ = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads,
                                   self.head_dim).permute(2, 0, 3, 1, 4)
@@ -112,8 +117,8 @@ class Block(nn.Module):
             drop=drop,
         )
 
-    def forward(self, x):
-        x = self.norm1(x + self.drop_path(self.mixer(x)))
+    def forward(self, x, direction=None):
+        x = self.norm1(x + self.drop_path(self.mixer(x, direction=direction)))
         x = self.norm2(x + self.drop_path(self.mlp(x)))
         return x
 
@@ -135,10 +140,10 @@ class FlattenBlockRe2D(Block):
         super().__init__(dim, num_heads, mlp_ratio, qkv_bias, qk_scale, drop,
                          attn_drop, drop_path, act_layer, norm_layer, eps)
 
-    def forward(self, x):
+    def forward(self, x, direction=None):
         B, C, H, W = x.shape
         x = x.flatten(2).transpose(1, 2)
-        x = super().forward(x)
+        x = super().forward(x, direction=direction)
         x = x.transpose(1, 2).reshape(B, C, H, W)
         return x
 
@@ -175,7 +180,7 @@ class ConvBlock(nn.Module):
             drop=drop,
         )
 
-    def forward(self, x):
+    def forward(self, x, direction=None):
         C, H, W = x.shape[1:]
         x = x + self.drop_path(self.mixer(x))
         x = self.norm1(x.flatten(2).transpose(1, 2))
@@ -186,7 +191,7 @@ class ConvBlock(nn.Module):
 
 class FlattenTranspose(nn.Module):
 
-    def forward(self, x):
+    def forward(self, x, direction=None):
         return x.flatten(2).transpose(1, 2)
 
 
@@ -206,7 +211,7 @@ class SubSample2D(nn.Module):
                               padding=1)
         self.norm = nn.LayerNorm(out_channels)
 
-    def forward(self, x, sz):
+    def forward(self, x, sz, direction=None):
         # print(x.shape)
         x = self.conv(x)
         C, H, W = x.shape[1:]
@@ -231,7 +236,7 @@ class SubSample1D(nn.Module):
                               padding=1)
         self.norm = nn.LayerNorm(out_channels)
 
-    def forward(self, x, sz):
+    def forward(self, x, sz, direction=None):
         C = x.shape[-1]
         x = x.transpose(1, 2).reshape(-1, C, sz[0], sz[1])
         x = self.conv(x)
@@ -242,22 +247,34 @@ class SubSample1D(nn.Module):
 
 class IdentitySize(nn.Module):
 
-    def forward(self, x, sz):
+    def forward(self, x, sz, direction=None):
         return x, sz
 
 
 class DirectionalReadingOrderPE(nn.Module):
 
-    def __init__(self, dim, max_size=256, scale_base=10000.0):
+    def __init__(self,
+                 dim,
+                 max_size=256,
+                 scale_base=10000.0,
+                 feature_type="2d"):
         super().__init__()
         if max_size <= 0:
             raise ValueError(f"max_size must be > 0, got {max_size}")
         if dim <= 0:
             raise ValueError(f"dim must be > 0, got {dim}")
+        if feature_type not in {"2d", "flatten"}:
+            raise ValueError(
+                f"feature_type must be '2d' or 'flatten', got {feature_type}")
         self.dim = dim
         self.max_size = int(max_size)
         self.scale_base = float(scale_base)
-        self.pe_scale = nn.Parameter(torch.tensor(0.0))
+        self.feature_type = feature_type
+        self.pe_scale = nn.Parameter(torch.tensor(1.0))
+        if self.feature_type == "flatten":
+            # Reuse existing shape-conversion blocks in this file.
+            self.to_2d = Feat2D()
+            self.to_flatten = FlattenTranspose()
         self.register_buffer(
             "pe_1d",
             self._build_sinusoidal_pe_1d(dim=self.dim, max_size=self.max_size),
@@ -285,9 +302,10 @@ class DirectionalReadingOrderPE(nn.Module):
             return direction
         return "horizontal" if w >= h else "vertical"
 
-    def forward(self, x, direction=None):
+    def _apply_pe_2d(self, x, direction=None):
         if x.dim() != 4:
-            raise ValueError(f"DirectionalReadingOrderPE expects [B, C, H, W], got {x.shape}")
+            raise ValueError(
+                f"DirectionalReadingOrderPE expects [B, C, H, W], got {x.shape}")
         _, c, h, w = x.shape
         if c != self.dim:
             raise ValueError(f"dim mismatch: module dim={self.dim}, input C={c}")
@@ -306,6 +324,29 @@ class DirectionalReadingOrderPE(nn.Module):
         else:
             raise ValueError(f"Unknown direction mode: {mode}")
         return x + self.pe_scale * pe
+
+    def forward(self, x, direction=None, sz=None):
+        if self.feature_type == "2d":
+            return self._apply_pe_2d(x, direction=direction)
+
+        # feature_type == "flatten"
+        if x.dim() != 3:
+            raise ValueError(
+                f"FlattenDirectionalPE expects [B, N, C], got {x.shape}")
+        if sz is None or len(sz) != 2:
+            raise ValueError("FlattenDirectionalPE requires sz=[H, W].")
+
+        b, n, c = x.shape
+        h, w = int(sz[0]), int(sz[1])
+        if n != h * w:
+            raise ValueError(
+                f"FlattenDirectionalPE shape mismatch: N={n}, H*W={h*w}, sz={sz}")
+        if c != self.dim:
+            raise ValueError(f"dim mismatch: module dim={self.dim}, input C={c}")
+
+        x_2d, _ = self.to_2d(x, [h, w], direction=direction)
+        x_2d = self._apply_pe_2d(x_2d, direction=direction)
+        return self.to_flatten(x_2d, direction=direction).contiguous()
 
 
 class SVTRStage(nn.Module):
@@ -348,11 +389,19 @@ class SVTRStage(nn.Module):
                               norm_layer=norm_layer,
                               eps=eps,
                               num_conv=num_conv[i]))
-            elif mixer[i] == 'DirectionalPE':
+            elif mixer[i] in ["DPE", 'DirectionalPE']:
                 self.blocks.append(
                     DirectionalReadingOrderPE(
                         dim=dim,
                         max_size=direction_pe_max_size,
+                        feature_type="2d",
+                    ))
+            elif mixer[i] in ['GDPE', 'GlobalDPE', 'GlobalDirectionalPE']:
+                self.blocks.append(
+                    DirectionalReadingOrderPE(
+                        dim=dim,
+                        max_size=direction_pe_max_size,
+                        feature_type="flatten",
                     ))
             else:
                 if mixer[i] == 'Global':
@@ -380,17 +429,20 @@ class SVTRStage(nn.Module):
                     ))
 
         if downsample:
-            if mixer[-1] in {'Conv', 'FGlobalRe2D', 'DirectionalPE'}:
+            if mixer[-1] in {'Conv', 'FGlobalRe2D', 'DirectionalPE', 'DPE'}:
                 self.downsample = SubSample2D(dim, out_dim, stride=sub_k)
             else:
                 self.downsample = SubSample1D(dim, out_dim, stride=sub_k)
         else:
             self.downsample = IdentitySize()
 
-    def forward(self, x, sz):
+    def forward(self, x, sz, direction=None):
         for blk in self.blocks:
-            x = blk(x)
-        x, sz = self.downsample(x, sz)
+            if isinstance(blk, DirectionalReadingOrderPE):
+                x = blk(x, direction=direction, sz=sz)
+            else:
+                x = blk(x, direction=direction)
+        x, sz = self.downsample(x, sz, direction=direction)
         return x, sz
 
 
@@ -408,7 +460,7 @@ class ADDPosEmbed(nn.Module):
             requires_grad=True,
         )
 
-    def forward(self, x):
+    def forward(self, x, direction=None):
         sz = x.shape[2:]
         x = x + self.pos_embed[:, :, :sz[0], :sz[1]]
         return x
@@ -450,7 +502,7 @@ class POPatchEmbed(nn.Module):
         if flatten:
             self.patch_embed.append(FlattenTranspose())
 
-    def forward(self, x):
+    def forward(self, x, direction=None):
         sz = x.shape[2:]
         x = self.patch_embed(x)
         return x, [sz[0] // 4, sz[1] // 4]
@@ -464,7 +516,7 @@ class LastStage(nn.Module):
         self.hardswish = nn.Hardswish()
         self.dropout = nn.Dropout(p=last_drop)
 
-    def forward(self, x, sz):
+    def forward(self, x, sz, direction=None):
         x = x.reshape(-1, sz[0], sz[1], x.shape[-1])
         x = x.mean(1)
         x = self.last_conv(x)
@@ -478,13 +530,13 @@ class Feat2D(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, x, sz):
+    def forward(self, x, sz, direction=None):
         C = x.shape[-1]
         x = x.transpose(1, 2).reshape(-1, C, sz[0], sz[1])
         return x, sz
 
 
-class SVTRv2LNConvTwo33(nn.Module):
+class SVTRv2LNConvTwo33_DPE(nn.Module):
 
     def __init__(self,
                  max_sz=[32, 128],
@@ -582,10 +634,10 @@ class SVTRv2LNConvTwo33(nn.Module):
     def no_weight_decay(self):
         return {'patch_embed', 'downsample', 'pos_embed'}
 
-    def forward(self, x):
+    def forward(self, x, direction=None):
         if len(x.shape) == 5:
             x = x.flatten(0, 1)
-        x, sz = self.pope(x)
+        x, sz = self.pope(x, direction=direction)
         for stage in self.stages:
-            x, sz = stage(x, sz)
+            x, sz = stage(x, sz, direction=direction)
         return x

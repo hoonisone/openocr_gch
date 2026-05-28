@@ -53,3 +53,4 @@ MODULE_MAPPING['NewVisionLANLabelEncode'] = (
     'gch.openocr.openrec.preprocess.new_visionlan_label_encode')
 MODULE_MAPPING['TilingAug'] = 'gch.openocr.openrec.preprocess.tiling_aug'
 MODULE_MAPPING['HV_90Rotate'] = 'gch.openocr.openrec.preprocess.hv_rotate'
+MODULE_MAPPING['Flip'] = 'gch.openocr.openrec.preprocess.rec_aug'

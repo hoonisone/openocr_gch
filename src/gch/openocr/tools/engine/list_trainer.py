@@ -163,6 +163,8 @@ class ListBased_NewTrainer(object):
 
         self.logger.info(
             f'run with torch {torch.__version__} and device {self.device}')
+        self.online_feedback_before_loss = bool(
+            self.cfg['Global'].get('online_feedback_before_loss', False))
 
     def _init_rec_model(self):
         from openocr.openrec.losses import build_loss as build_rec_loss
@@ -202,6 +204,14 @@ class ListBased_NewTrainer(object):
         # build metric
         self.eval_class = build_rec_metric(self.cfg['Metric'])
 
+
+        # DATR의 score 학습을 위해 필요한 부분이다.
+        # Online 학습을 위해 실시간 점수를 loss 모듈에 전달하기 위함
+        if hasattr(self.loss_class, "report_eval_result"):
+            setattr(self.eval_class, "report_eval_result_fallback",
+                    self.loss_class.report_eval_result)
+                    
+
     def _init_det_model(self):
         from openocr.opendet.losses import build_loss as build_det_loss
         from openocr.opendet.metrics import build_metric as build_det_metric
@@ -217,6 +227,16 @@ class ListBased_NewTrainer(object):
         self.loss_class = build_det_loss(self.cfg['Loss'])
         # build metric
         self.eval_class = build_det_metric(self.cfg['Metric'])
+
+    def _maybe_run_online_feedback(self, preds, batch_numpy):
+        """Optionally run postprocess+eval before loss for online feedback."""
+        if not self.online_feedback_before_loss:
+            return
+        if self.task != 'rec':
+            return
+        post_result = self.post_process_class(preds, batch_numpy)
+        # Must be training=False so metric can report eval result callback.
+        self.eval_class(post_result, batch_numpy, training=True)
 
     def load_params(self, params):
         self.model.load_state_dict(params)
@@ -365,6 +385,8 @@ class ListBased_NewTrainer(object):
                         else:
                             preds = self.model(batch_tensor[0],
                                                data=batch_tensor[1:])
+
+                        self._maybe_run_online_feedback(preds, batch_numpy)
                         loss = self.loss_class(preds, batch_tensor)
                         loss['loss'] = loss['loss'] / self.accumulation_steps
                     self.scaler.scale(loss['loss']).backward()
@@ -379,6 +401,7 @@ class ListBased_NewTrainer(object):
                         self.optimizer.zero_grad(set_to_none=True)
                 else:
                     preds = self.model(batch_tensor[0], data=batch_tensor[1:])
+                    self._maybe_run_online_feedback(preds, batch_numpy)
                     loss = self.loss_class(preds, batch_tensor)
                     avg_loss = loss['loss']
                     avg_loss.backward()

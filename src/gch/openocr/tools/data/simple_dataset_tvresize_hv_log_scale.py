@@ -18,7 +18,7 @@ data_mod.DATASET_MODULES['SimpleDatasetTVResize_HV_LogScale'] = (
 
 
 def _signed_log2_ratio_worker(args):
-    line, delimiter, data_dir, max_log_ratio, scale_factor = args
+    line, delimiter, data_dir, min_log_ratio, max_log_ratio, scale_factor = args
     try:
         text = line.decode('utf-8')
         substr = text.rstrip('\r\n').split(delimiter)
@@ -47,7 +47,7 @@ def _signed_log2_ratio_worker(args):
         if scale_factor <= 1.0:
             return 0
         log_bin = int(round(math.log(ratio_wh, scale_factor)))
-        log_bin = int(np.clip(log_bin, -max_log_ratio, max_log_ratio))
+        log_bin = int(np.clip(log_bin, min_log_ratio, max_log_ratio))
         return log_bin
 
     except Exception:
@@ -77,6 +77,35 @@ class SimpleDatasetTVResize_HV_LogScale(Dataset):
     (e.g., -2, -1, 0, 1, 2)
     """
 
+    @staticmethod
+    def _parse_log_ratio_range(value):
+        # Accept:
+        #  - scalar x (x >= 0) => [-x, +x]
+        #  - [min_log_ratio, max_log_ratio]
+        if isinstance(value, (int, float)):
+            x = int(value)
+            if x < 0:
+                raise ValueError("max_log_ratio scalar must be >= 0")
+            return -x, x
+
+        if isinstance(value, (list, tuple)):
+            if len(value) != 2:
+                raise ValueError(
+                    "max_log_ratio list must have exactly 2 elements: "
+                    "[min_log_ratio, max_log_ratio]"
+                )
+            min_log_ratio = int(value[0])
+            max_log_ratio = int(value[1])
+            if min_log_ratio > max_log_ratio:
+                raise ValueError(
+                    "For max_log_ratio list, min_log_ratio must be <= max_log_ratio"
+                )
+            return min_log_ratio, max_log_ratio
+
+        raise ValueError(
+            "max_log_ratio must be a scalar or [min_log_ratio, max_log_ratio]"
+        )
+
     def __init__(self, config, mode, logger, seed=None, epoch=1, task='rec'):
         super().__init__()
 
@@ -90,16 +119,39 @@ class SimpleDatasetTVResize_HV_LogScale(Dataset):
         self.delimiter = dataset_config.get('delimiter', '\t')
 
         # Log-ratio bin config.
-        # max_log_ratio=2 gives signed bins: -2, -1, 0, 1, 2
-        self.max_log_ratio = int(loader_config.get('max_log_ratio', 3))
+        # scalar x => [-x, +x], list [min, max] => [min, max]
+        log_ratio_cfg = loader_config.get(
+            'max_log_ratio',
+            loader_config.get('max_ratio', 3),
+        )
+        self.min_log_ratio, self.max_log_ratio = self._parse_log_ratio_range(
+            log_ratio_cfg)
+
         self.scale_factor = float(
             dataset_config.get('scale_factor', loader_config.get('scale_factor', 2.0))
         )
         if self.scale_factor <= 1.0:
             raise ValueError("scale_factor must be > 1.0")
         self.base_size = int(dataset_config.get('base_size', 32))
+        self.base_range = dataset_config.get('base_range', 64*64)
+        if self.base_range is not None:
+            self.base_range = float(self.base_range)
+            if self.base_range <= 0:
+                raise ValueError("base_range must be > 0 when provided")
         self.min_shape_size = int(dataset_config.get('min_shape_size', 1))
-        base_shape_cfg = dataset_config.get('base_shape', {'0': [64, 64], '1': [96, 48], '-1': [48, 96]})
+        self.width_diviser = int(
+            dataset_config.get(
+                'width_diviser',
+                dataset_config.get('width_divisor', 4),
+            ))
+        self.height_diviser = int(
+            dataset_config.get(
+                'height_diviser',
+                dataset_config.get('height_divisor', 4),
+            ))
+        if self.width_diviser < 1 or self.height_diviser < 1:
+            raise ValueError("width_diviser and height_diviser must be >= 1")
+        base_shape_cfg = dataset_config.get('base_shape', None)
         self.base_shape = {}
         if base_shape_cfg is not None:
             if not isinstance(base_shape_cfg, dict):
@@ -120,13 +172,13 @@ class SimpleDatasetTVResize_HV_LogScale(Dataset):
                         "e.g. [64, 32]"
                     )
                 key = int(log_bin)
-                if key < -self.max_log_ratio or key > self.max_log_ratio:
+                if key < self.min_log_ratio or key > self.max_log_ratio:
                     raise ValueError(
                         f"base_shape log_bin={key} is out of range "
-                        f"[-{self.max_log_ratio}, {self.max_log_ratio}]"
+                        f"[{self.min_log_ratio}, {self.max_log_ratio}]"
                     )
-                w = max(self.min_shape_size, int(round(float(shape[0]))))
-                h = max(self.min_shape_size, int(round(float(shape[1]))))
+                w = self._align_to_diviser(float(shape[0]), self.width_diviser)
+                h = self._align_to_diviser(float(shape[1]), self.height_diviser)
                 self.base_shape[key] = [w, h]
 
         label_file_list = dataset_config['label_file_list']
@@ -197,11 +249,11 @@ class SimpleDatasetTVResize_HV_LogScale(Dataset):
         self.ops = create_operators(dataset_config['transforms'],
                                     global_config)
 
-        # signed bins: -max_log_ratio ... +max_log_ratio
+        # signed bins: [min_log_ratio ... max_log_ratio]
         signed_bins = np.array(self.get_wh_ratio(), dtype=np.int32)
         signed_bins = np.clip(
             signed_bins,
-            -self.max_log_ratio,
+            self.min_log_ratio,
             self.max_log_ratio,
         ).astype(np.int32)
 
@@ -210,9 +262,9 @@ class SimpleDatasetTVResize_HV_LogScale(Dataset):
         # Use signed bins directly for sampler grouping.
         self.wh_ratio = signed_bins.astype(np.int32)
 
-        for signed_bin in range(-self.max_log_ratio, self.max_log_ratio + 1):
+        for signed_bin in range(self.min_log_ratio, self.max_log_ratio + 1):
             count = int((self.wh_signed_log_ratio == signed_bin).sum())
-            logger.info(f'signed_log2_ratio_bin={signed_bin}: {count}')
+            logger.info(f'signed_log{self.scale_factor}_ratio_bin={signed_bin}: {count}')
 
         self.wh_ratio_sort = np.argsort(self.wh_ratio)
 
@@ -224,9 +276,60 @@ class SimpleDatasetTVResize_HV_LogScale(Dataset):
             T.ToTensor(),
             T.Normalize(0.5, 0.5),
         ])
+        self.bin_to_shape = self._build_bin_to_shape()
+        bin_shape_log = ", ".join(
+            f"{k}:({v[0]}x{v[1]})" for k, v in sorted(self.bin_to_shape.items())
+        )
+        self.logger.info(f'bin_to_shape: {bin_shape_log}')
 
+    def _align_to_diviser(self, value, diviser):
+        rounded = int(round(float(value) / float(diviser))) * int(diviser)
+        rounded = max(int(diviser), rounded)
+        min_aligned = int(
+            math.ceil(float(self.min_shape_size) / float(diviser)) * int(diviser))
+        return max(rounded, min_aligned)
 
         
+
+    def _build_bin_to_shape(self):
+        mapping = {}
+        for signed_bin in range(self.min_log_ratio, self.max_log_ratio + 1):
+            if signed_bin in self.base_shape:
+                shape = self.base_shape[signed_bin]
+                mapping[signed_bin] = (int(shape[0]), int(shape[1]))
+                continue
+
+            scale = self.scale_factor ** abs(signed_bin)
+            if self.base_range is not None:
+                short_side = math.sqrt(self.base_range / float(scale))
+                long_side = short_side * float(scale)
+
+                if short_side >= float(self.base_size):
+                    if signed_bin >= 0:
+                        imgW = int(round(long_side))
+                        imgH = int(round(short_side))
+                    else:
+                        imgW = int(round(short_side))
+                        imgH = int(round(long_side))
+                else:
+                    if signed_bin >= 0:
+                        imgW = int(round(self.base_size * scale))
+                        imgH = self.base_size
+                    else:
+                        imgW = self.base_size
+                        imgH = int(round(self.base_size * scale))
+            else:
+                if signed_bin >= 0:
+                    imgW = int(round(self.base_size * scale))
+                    imgH = self.base_size
+                else:
+                    imgW = self.base_size
+                    imgH = int(round(self.base_size * scale))
+
+            imgW = self._align_to_diviser(imgW, self.width_diviser)
+            imgH = self._align_to_diviser(imgH, self.height_diviser)
+            mapping[signed_bin] = (int(imgW), int(imgH))
+        return mapping
 
     def _shape_from_signed_log_bin(self, signed_bin):
         """Return target shape [imgW, imgH] from signed log-base(scale_factor) bin.
@@ -243,31 +346,12 @@ class SimpleDatasetTVResize_HV_LogScale(Dataset):
         """
         signed_bin = int(np.clip(
             int(signed_bin),
-            -self.max_log_ratio,
+            self.min_log_ratio,
             self.max_log_ratio,
         ))
 
-        if signed_bin in self.base_shape:
-            shape = self.base_shape[signed_bin]
-            return int(shape[0]), int(shape[1])
-
-        if signed_bin == 0:
-            imgW = max(self.min_shape_size, self.base_size)
-            imgH = max(self.min_shape_size, self.base_size)
-            return int(imgW), int(imgH)
-
-        scale = self.scale_factor ** abs(signed_bin)
-
-        if signed_bin > 0:
-            imgW = int(round(self.base_size * scale))
-            imgH = self.base_size
-        else:
-            imgW = self.base_size
-            imgH = int(round(self.base_size * scale))
-
-        imgW = max(self.min_shape_size, imgW)
-        imgH = max(self.min_shape_size, imgH)
-        return int(imgW), int(imgH)
+        shape = self.bin_to_shape[signed_bin]
+        return int(shape[0]), int(shape[1])
 
     def _set_epoch_as_seed(self, seed, dataset_config):
         if self.mode != 'train':
@@ -382,7 +466,7 @@ class SimpleDatasetTVResize_HV_LogScale(Dataset):
                 log_bin = int(round(math.log(ratio_wh, self.scale_factor)))
                 log_bin = int(np.clip(
                     log_bin,
-                    -self.max_log_ratio,
+                    self.min_log_ratio,
                     self.max_log_ratio,
                 ))
                 signed_bins.append(log_bin)
@@ -413,6 +497,7 @@ class SimpleDatasetTVResize_HV_LogScale(Dataset):
                 self.data_lines[int(self.data_idx_order_list[i, 1])][0],
                 self.delimiter,
                 self.data_lines[int(self.data_idx_order_list[i, 1])][1],
+                self.min_log_ratio,
                 self.max_log_ratio,
                 self.scale_factor,
             )
@@ -501,7 +586,7 @@ class SimpleDatasetTVResize_HV_LogScale(Dataset):
         real_log_bin = int(round(math.log(ratio_wh, self.scale_factor)))
         real_log_bin = int(np.clip(
             real_log_bin,
-            -self.max_log_ratio,
+            self.min_log_ratio,
             self.max_log_ratio,
         ))
 
